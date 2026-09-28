@@ -1,0 +1,55 @@
+<Window x:Class="CaptionTranslator.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Caption Translator (DE → EN)" Height="340" Width="780" MinHeight="150" MinWidth="420"
+        Icon="Assets/AppIcon.ico" Background="#1E1E1E" Foreground="#F0F0F0" Topmost="True"
+        Loaded="OnLoaded" Closing="OnClosing">
+    <Window.Resources>
+        <Style TargetType="Button">
+            <Setter Property="Margin" Value="4,0" />
+            <Setter Property="Padding" Value="8,2" />
+        </Style>
+        <Style TargetType="CheckBox">
+            <Setter Property="Margin" Value="8,0" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="Foreground" Value="#F0F0F0" />
+        </Style>
+    </Window.Resources>
+    <DockPanel>
+        <Border DockPanel.Dock="Top" Background="#2D2D30" Padding="6">
+            <WrapPanel>
+                <ComboBox x:Name="SourceBox" Width="190" SelectionChanged="OnSourceChanged">
+                    <ComboBoxItem Content="Teams captions" Tag="Teams" />
+                    <ComboBoxItem Content="Windows Live Captions" Tag="LiveCaptions" />
+                </ComboBox>
+                <CheckBox x:Name="ShowGermanBox" Content="Show German" Click="OnShowGermanClick" />
+                <CheckBox x:Name="TopmostBox" Content="Always on top" Click="OnTopmostClick" />
+                <Button Content="A−" Click="OnSmallerClick" ToolTip="Smaller text" />
+                <Button Content="A+" Click="OnLargerClick" ToolTip="Larger text" />
+                <Button Content="Copy all" Click="OnCopyClick" />
+                <Button Content="Clear" Click="OnClearClick" />
+                <Button Content="Diagnose" Click="OnDiagnoseClick" ToolTip="Save the UI tree of the caption source to a file (for fixing detection problems)" />
+            </WrapPanel>
+        </Border>
+        <Border DockPanel.Dock="Bottom" Background="#2D2D30" Padding="8,3">
+            <TextBlock x:Name="StatusText" Foreground="#A0A0A0" TextTrimming="CharacterEllipsis" Text="Starting…" />
+        </Border>
+        <TextBlock x:Name="PendingText" DockPanel.Dock="Bottom" Margin="10,2,10,4" Foreground="#8A8A8A" FontStyle="Italic" TextWrapping="Wrap" />
+        <ScrollViewer x:Name="Scroller" VerticalScrollBarVisibility="Auto">
+            <ItemsControl x:Name="LinesList" Margin="4" FontSize="18" Tag="{x:Static Visibility.Visible}">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <StackPanel Margin="6,4">
+                            <TextBlock TextWrapping="Wrap">
+                                <Run Text="{Binding SpeakerLabel, Mode=OneWay}" Foreground="#6CB8FF" FontWeight="SemiBold" />
+                                <Run Text="{Binding EnglishDisplay, Mode=OneWay}" />
+                            </TextBlock>
+                            <TextBlock Text="{Binding GermanText, Mode=OneWay}" Foreground="#8A8A8A" FontSize="13" TextWrapping="Wrap"
+                                       Visibility="{Binding Tag, RelativeSource={RelativeSource AncestorType=ItemsControl}}" />
+                        </StackPanel>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </ScrollViewer>
+    </DockPanel>
+</Window>
