@@ -4,3 +4,10 @@ publish/
 TestResults/
 *.user
 .vs/
+
+# App logs, diagnostics dumps and caption recordings may contain meeting text - never commit them
+*.log
+logs/
+uitree-*.txt
+log-*.txt
+caption-recording*.json
