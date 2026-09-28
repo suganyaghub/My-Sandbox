@@ -10,6 +10,10 @@ namespace CaptionTranslator.Translation
     public sealed class OpusMtTranslator : ITranslator
     {
         private const int maxInputTokens = 512;
+
+        // Measured on a 12-thread laptop CPU: 4 threads 327 ms, 6 threads 361 ms, 8 threads 490 ms, 12 threads 755 ms per sentence.
+        // More threads spill onto hyperthreads / efficiency cores and get slower.
+        private const int defaultThreads = 4;
         private const long decoderStartTokenId = 58100;
         private const int attentionHeads = 8;
         private const int headSize = 64;
@@ -26,17 +30,25 @@ namespace CaptionTranslator.Translation
         private readonly Dictionary<string, int> decoderOutputIndex;
 
         public OpusMtTranslator(string modelDirectory)
+            : this(modelDirectory, ModelFiles.EncoderFile, ModelFiles.DecoderFile, Math.Min(defaultThreads, Environment.ProcessorCount))
+        {
+        }
+
+        /// <param name="encoderFile">File name inside the "onnx" folder, e.g. "encoder_model.onnx" or the int8 variant.</param>
+        /// <param name="decoderFile">File name inside the "onnx" folder of the merged (key/value cache) decoder.</param>
+        /// <param name="threads">CPU threads per inference.</param>
+        public OpusMtTranslator(string modelDirectory, string encoderFile, string decoderFile, int threads)
         {
             this.tokenizer = MarianTokenizer.Load(Path.Combine(modelDirectory, "source.spm"), Path.Combine(modelDirectory, "vocab.json"));
 
             SessionOptions options = new SessionOptions
             {
                 GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL,
-                IntraOpNumThreads = Math.Max(1, Environment.ProcessorCount / 2),
+                IntraOpNumThreads = Math.Max(1, threads),
             };
 
-            this.encoder = new InferenceSession(Path.Combine(modelDirectory, "onnx", "encoder_model.onnx"), options);
-            this.decoder = new InferenceSession(Path.Combine(modelDirectory, "onnx", "decoder_model_merged.onnx"), options);
+            this.encoder = new InferenceSession(Path.Combine(modelDirectory, "onnx", encoderFile), options);
+            this.decoder = new InferenceSession(Path.Combine(modelDirectory, "onnx", decoderFile), options);
             this.pastInputNames = this.decoder.InputNames.Where(name => name.StartsWith(pastPrefix, StringComparison.Ordinal)).ToList();
             this.decoderOutputNames = this.decoder.OutputNames.ToList();
             this.decoderOutputIndex = this.decoderOutputNames.Select((name, index) => (name, index)).ToDictionary(pair => pair.name, pair => pair.index);

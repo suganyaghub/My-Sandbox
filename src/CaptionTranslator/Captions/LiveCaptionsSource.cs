@@ -33,7 +33,10 @@ namespace CaptionTranslator.Captions
                 }
 
                 string text = this.textBlock.Current.Name ?? string.Empty;
-                List<CaptionSegment> segments = SentenceSplitter.Split(text).Select(sentence => new CaptionSegment(string.Empty, sentence)).ToList();
+                // One segment: CaptionStabilizer splits it into sentences and waits until each is stable,
+                // because Live Captions keeps correcting the most recent words.
+                string normalized = TeamsCaptionParser.NormalizeWhitespace(text);
+                List<CaptionSegment> segments = normalized.Length > 0 ? new List<CaptionSegment> { new CaptionSegment(string.Empty, normalized) } : new List<CaptionSegment>();
                 return CaptionReadResult.Read(segments, segments.Count > 0 ? "Reading Windows Live Captions" : "Windows Live Captions found – waiting for speech…");
             }
             catch (Exception exception) when (TeamsCaptionSource.IsTransient(exception))

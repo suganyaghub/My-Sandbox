@@ -73,6 +73,62 @@ namespace CaptionTranslator.Tests
             Assert.AreEqual(0, result.Count);
         }
 
+        [TestMethod]
+        public void Process_FinishedSentenceInGrowingSegment_EmittedAfterStablePeriodWithoutWaitingForTheSegment()
+        {
+            this.stabilizer.Process(Snapshot(("Anna", "Erster Satz. Zweiter")), start);
+            IReadOnlyList<CaptionSegment> early = this.stabilizer.Process(Snapshot(("Anna", "Erster Satz. Zweiter")), start.AddMilliseconds(400));
+            IReadOnlyList<CaptionSegment> result = this.stabilizer.Process(Snapshot(("Anna", "Erster Satz. Zweiter Satz geht")), start.AddMilliseconds(700));
+
+            Assert.AreEqual(0, early.Count);
+            CollectionAssert.AreEqual(new[] { new CaptionSegment("Anna", "Erster Satz.") }, result.ToArray());
+            Assert.AreEqual("Zweiter Satz geht", this.stabilizer.Pending?.Text);
+        }
+
+        [TestMethod]
+        public void Process_NewestSentenceEndsWithPunctuation_EmittedAfterStablePeriodNotQuietPeriod()
+        {
+            this.stabilizer.Process(Snapshot(("Anna", "Das war alles.")), start);
+            IReadOnlyList<CaptionSegment> result = this.stabilizer.Process(Snapshot(("Anna", "Das war alles.")), start.AddMilliseconds(700));
+
+            CollectionAssert.AreEqual(new[] { new CaptionSegment("Anna", "Das war alles.") }, result.ToArray());
+        }
+
+        [TestMethod]
+        public void Process_NewestSentenceWithoutPunctuation_WaitsForQuietPeriod()
+        {
+            this.stabilizer.Process(Snapshot(("Anna", "Das war alles")), start);
+            IReadOnlyList<CaptionSegment> early = this.stabilizer.Process(Snapshot(("Anna", "Das war alles")), start.AddMilliseconds(700));
+            IReadOnlyList<CaptionSegment> late = this.stabilizer.Process(Snapshot(("Anna", "Das war alles")), start.AddMilliseconds(1600));
+
+            Assert.AreEqual(0, early.Count);
+            Assert.AreEqual(1, late.Count);
+        }
+
+        [TestMethod]
+        public void Process_SentenceCorrectedWithinStablePeriod_EmitsOnlyTheCorrectedVersion()
+        {
+            List<CaptionSegment> emitted = new List<CaptionSegment>();
+            emitted.AddRange(this.stabilizer.Process(Snapshot(("Anna", "Das ist gut. Und")), start));
+            emitted.AddRange(this.stabilizer.Process(Snapshot(("Anna", "Das ist sehr gut. Und dann")), start.AddMilliseconds(300)));
+            emitted.AddRange(this.stabilizer.Process(Snapshot(("Anna", "Das ist sehr gut. Und dann")), start.AddMilliseconds(700)));
+            emitted.AddRange(this.stabilizer.Process(Snapshot(("Anna", "Das ist sehr gut. Und dann")), start.AddMilliseconds(1000)));
+
+            CollectionAssert.AreEqual(new[] { new CaptionSegment("Anna", "Das ist sehr gut.") }, emitted.ToArray());
+        }
+
+        [TestMethod]
+        public void Process_SingleScrollingTextBlock_EmitsEachSentenceOnce()
+        {
+            List<CaptionSegment> emitted = new List<CaptionSegment>();
+            emitted.AddRange(this.stabilizer.Process(Snapshot(("", "Das ist der erste Satz. Zweiter")), start));
+            emitted.AddRange(this.stabilizer.Process(Snapshot(("", "Das ist der erste Satz. Zweiter Satz.")), start.AddMilliseconds(700)));
+            emitted.AddRange(this.stabilizer.Process(Snapshot(("", "ist der erste Satz. Zweiter Satz. Dritter")), start.AddMilliseconds(1100)));
+            emitted.AddRange(this.stabilizer.Process(Snapshot(("", "ist der erste Satz. Zweiter Satz. Dritter")), start.AddMilliseconds(1500)));
+
+            CollectionAssert.AreEqual(new[] { new CaptionSegment("", "Das ist der erste Satz."), new CaptionSegment("", "Zweiter Satz.") }, emitted.ToArray());
+        }
+
         private static IReadOnlyList<CaptionSegment> Snapshot(params (string Speaker, string Text)[] segments)
             => segments.Select(segment => new CaptionSegment(segment.Speaker, segment.Text)).ToList();
     }

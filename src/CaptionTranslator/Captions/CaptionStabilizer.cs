@@ -1,120 +1,159 @@
 namespace CaptionTranslator.Captions
 {
     /// <summary>
-    /// Caption sources rewrite the newest line while the person is still speaking. This class turns a stream of
-    /// snapshots into finished lines, each emitted once:
-    /// - every segment except the last is final (a newer one exists after it);
-    /// - the last segment is final once its text has not changed for the quiet period.
-    /// If a finished line later grows (the speaker continued), only the new remainder is emitted.
+    /// Caption sources keep rewriting the newest caption while the person is still speaking, and Teams keeps one
+    /// caption growing for many sentences. This class turns a stream of snapshots into finished <b>sentences</b>,
+    /// each emitted once, as early as it is safe:
+    /// - sentences in an older segment (a newer segment exists after it) are final immediately;
+    /// - finished sentences inside the newest segment are final once unchanged for the stable period
+    ///   (the source may still correct the last words for a moment);
+    /// - the unfinished last sentence is final once unchanged for the quiet period (the speaker paused).
+    /// If an emitted sentence later grows (the speaker continued it), only the new remainder is emitted.
     /// </summary>
     public sealed class CaptionStabilizer
     {
-        private const int rememberedLineCount = 200;
+        private const int rememberedSentenceCount = 400;
+        private const char keySeparator = '\u0001';
 
         private readonly TimeSpan quietPeriod;
+        private readonly TimeSpan stablePeriod;
         private readonly LinkedList<CaptionSegment> emitted = new LinkedList<CaptionSegment>();
-        private CaptionSegment? pending;
-        private DateTimeOffset pendingSince;
+        private Dictionary<string, DateTimeOffset> firstSeen = new Dictionary<string, DateTimeOffset>();
 
         public CaptionStabilizer(TimeSpan quietPeriod)
+            : this(quietPeriod, TimeSpan.FromMilliseconds(600))
         {
-            this.quietPeriod = quietPeriod;
         }
 
-        /// <summary>The newest segment that is not final yet, for showing live progress. Null if none.</summary>
+        public CaptionStabilizer(TimeSpan quietPeriod, TimeSpan stablePeriod)
+        {
+            this.quietPeriod = quietPeriod;
+            this.stablePeriod = stablePeriod;
+        }
+
+        /// <summary>The part of the newest segment that is not emitted yet, for showing live progress. Null if none.</summary>
         public CaptionSegment? Pending { get; private set; }
 
         /// <summary>Treats these lines as already emitted, e.g. old captions that were on screen before the app started.</summary>
         public void MarkAsSeen(IEnumerable<CaptionSegment> segments)
         {
             foreach (CaptionSegment segment in segments)
-                Remember(Normalize(segment));
+            {
+                CaptionSegment normalized = Normalize(segment);
+                foreach (string sentence in SentenceSplitter.Split(normalized.Text))
+                    Remember(new CaptionSegment(normalized.Speaker, sentence));
+            }
         }
 
         public IReadOnlyList<CaptionSegment> Process(IReadOnlyList<CaptionSegment> snapshot, DateTimeOffset now)
         {
             List<CaptionSegment> finished = new List<CaptionSegment>();
-            this.Pending = null;
+            Dictionary<string, DateTimeOffset> seenNow = new Dictionary<string, DateTimeOffset>();
+            List<string> pendingParts = new List<string>();
+            string pendingSpeaker = string.Empty;
 
-            for (int index = 0; index < snapshot.Count; index++)
+            for (int segmentIndex = 0; segmentIndex < snapshot.Count; segmentIndex++)
             {
-                CaptionSegment segment = Normalize(snapshot[index]);
-                if (segment.Text.Length == 0)
-                    continue;
+                CaptionSegment segment = Normalize(snapshot[segmentIndex]);
+                IReadOnlyList<string> sentences = SentenceSplitter.Split(segment.Text);
+                bool isNewestSegment = segmentIndex == snapshot.Count - 1;
 
-                bool isLast = index == snapshot.Count - 1;
-                if (isLast)
+                for (int sentenceIndex = 0; sentenceIndex < sentences.Count; sentenceIndex++)
                 {
-                    if (segment != this.pending)
-                    {
-                        this.pending = segment;
-                        this.pendingSince = now;
-                    }
+                    CaptionSegment sentence = new CaptionSegment(segment.Speaker, sentences[sentenceIndex]);
+                    DateTimeOffset since = TrackFirstSeen(sentence, now, seenNow);
+                    // The newest sentence counts as finished once it ends with punctuation (Teams adds it when the sentence is done);
+                    // if the speaker continues it anyway, only the new remainder is emitted later.
+                    bool isOpen = isNewestSegment && sentenceIndex == sentences.Count - 1 && !EndsWithSentencePunctuation(sentence.Text);
+                    bool mayBeTruncated = segmentIndex == 0 && sentenceIndex == 0;
+                    TimeSpan required = !isNewestSegment ? TimeSpan.Zero : isOpen ? this.quietPeriod : this.stablePeriod;
 
-                    if (now - this.pendingSince < this.quietPeriod)
+                    if (now - since < required)
                     {
-                        if (!IsCovered(segment, false))
-                            this.Pending = segment;
+                        if (!IsCovered(sentence, mayBeTruncated))
+                        {
+                            pendingParts.Add(sentence.Text);
+                            pendingSpeaker = sentence.Speaker;
+                        }
+
                         continue;
                     }
-                }
 
-                CaptionSegment? result = TryEmit(segment, index == 0);
-                if (result != null)
-                    finished.Add(result);
+                    CaptionSegment? result = TryEmit(sentence, mayBeTruncated);
+                    if (result != null)
+                        finished.Add(result);
+                }
             }
 
+            this.firstSeen = seenNow;
+            this.Pending = pendingParts.Count > 0 ? new CaptionSegment(pendingSpeaker, string.Join(" ", pendingParts)) : null;
             return finished;
         }
 
-        private CaptionSegment? TryEmit(CaptionSegment segment, bool mayBeTruncated)
+        /// <summary>When this exact sentence text was first seen in consecutive snapshots; resets as soon as the text changes.</summary>
+        private DateTimeOffset TrackFirstSeen(CaptionSegment sentence, DateTimeOffset now, Dictionary<string, DateTimeOffset> seenNow)
         {
-            if (IsCovered(segment, mayBeTruncated))
+            string key = sentence.Speaker + keySeparator + sentence.Text;
+            if (!seenNow.TryGetValue(key, out DateTimeOffset since))
+            {
+                since = this.firstSeen.TryGetValue(key, out DateTimeOffset previous) ? previous : now;
+                seenNow[key] = since;
+            }
+
+            return since;
+        }
+
+        private CaptionSegment? TryEmit(CaptionSegment sentence, bool mayBeTruncated)
+        {
+            if (IsCovered(sentence, mayBeTruncated))
                 return null;
 
-            // The speaker continued a line that was already emitted: emit only the new part.
-            // Only the newest few lines are candidates, so an unrelated old line cannot swallow a new one.
+            // The speaker continued a sentence that was already emitted (after a pause): emit only the new part.
+            // Only the newest few sentences are candidates, so an unrelated old one cannot swallow a new one.
             foreach (CaptionSegment previous in this.emitted.Take(5))
             {
-                if (previous.Speaker == segment.Speaker && segment.Text.StartsWith(previous.Text, StringComparison.Ordinal))
+                if (previous.Speaker == sentence.Speaker && sentence.Text.StartsWith(previous.Text, StringComparison.Ordinal))
                 {
-                    string remainder = segment.Text.Substring(previous.Text.Length).Trim();
-                    Remember(segment);
-                    return remainder.Length == 0 ? null : new CaptionSegment(segment.Speaker, remainder);
+                    string remainder = sentence.Text.Substring(previous.Text.Length).Trim();
+                    Remember(sentence);
+                    return remainder.Length == 0 ? null : new CaptionSegment(sentence.Speaker, remainder);
                 }
             }
 
-            Remember(segment);
-            return segment;
+            Remember(sentence);
+            return sentence;
         }
 
         /// <summary>
-        /// True if this exact line was already emitted. The first visible segment may be cut off at the start
-        /// because older text scrolled away, so for it any emitted line that contains it counts too.
+        /// True if this exact sentence was already emitted. The first visible sentence may be cut off at the start
+        /// because older text scrolled away, so for it any emitted sentence that ends with it counts too.
         /// </summary>
-        private bool IsCovered(CaptionSegment segment, bool mayBeTruncated)
+        private bool IsCovered(CaptionSegment sentence, bool mayBeTruncated)
         {
             foreach (CaptionSegment previous in this.emitted)
             {
-                if (previous.Speaker != segment.Speaker)
+                if (previous.Speaker != sentence.Speaker)
                     continue;
 
-                if (previous.Text == segment.Text)
+                if (previous.Text == sentence.Text)
                     return true;
 
-                if (mayBeTruncated && previous.Text.EndsWith(segment.Text, StringComparison.Ordinal))
+                if (mayBeTruncated && previous.Text.EndsWith(sentence.Text, StringComparison.Ordinal))
                     return true;
             }
 
             return false;
         }
 
-        private void Remember(CaptionSegment segment)
+        private void Remember(CaptionSegment sentence)
         {
-            this.emitted.AddFirst(segment);
-            while (this.emitted.Count > rememberedLineCount)
+            this.emitted.AddFirst(sentence);
+            while (this.emitted.Count > rememberedSentenceCount)
                 this.emitted.RemoveLast();
         }
+
+        private static bool EndsWithSentencePunctuation(string text)
+            => text.Length > 0 && ".!?…".Contains(text[^1]);
 
         private static CaptionSegment Normalize(CaptionSegment segment)
             => new CaptionSegment(TeamsCaptionParser.NormalizeWhitespace(segment.Speaker), TeamsCaptionParser.NormalizeWhitespace(segment.Text));

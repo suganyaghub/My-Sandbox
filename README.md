@@ -10,10 +10,21 @@ No meeting text leaves the PC.
 2. Start `CaptionTranslator.exe`. New finished caption lines appear with speaker name, English text and (optionally) the German original.
    On startup only the newest 3 existing lines are translated.
 
-Fallback source: choose **Windows Live Captions** in the drop-down (start it with Win+Ctrl+L, set the language to German).
+Fallback source: switch to **Windows Live Captions** at the top left (start it with Win+Ctrl+L, set the language to German).
 It works for any audio, but without speaker names.
 
-Buttons: font size (A− / A+), *Copy all* (English + German to the clipboard), *Clear*, *Diagnose* (saves the UI tree of the source app to a file; send it to the author if captions are not detected after a Teams update).
+**Read aloud:** click *Read aloud* to hear each English line with the offline Windows voices. Use headphones, otherwise the meeting hears it.
+It is not available with the Windows Live Captions source (it would caption its own speech). If people talk faster than the voice, older lines are skipped to stay live.
+
+**Window:**
+- Toolbar (top right): *Read aloud*, copy all lines, clear, settings (gear).
+- Title bar: pin keeps the window on top of other windows.
+- Each caption card has a copy button when you hover over it.
+- Ctrl + mouse wheel over the captions changes the text size.
+- The status dot at the bottom left: green = live, amber = captions found but nobody is speaking, grey = source not found, red = error.
+
+**Settings (gear):** show/hide the German original, text size, output device for reading aloud (lists connected headsets and speakers), voice, speed, *Test voice*,
+*Save diagnostics file* (send it to the author if captions are not detected after a Teams update) and *Open log folder*.
 
 ## First start
 

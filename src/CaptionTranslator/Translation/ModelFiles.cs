@@ -5,6 +5,9 @@ namespace CaptionTranslator.Translation
     /// <summary>Location of the translation model and download of missing files (one time, about 420 MB).</summary>
     public static class ModelFiles
     {
+        public const string EncoderFile = "encoder_model.onnx";
+        public const string DecoderFile = "decoder_model_merged.onnx";
+
         private const string baseUrl = "https://huggingface.co/Xenova/opus-mt-de-en/resolve/main/";
 
         private static readonly string[] requiredFiles =
@@ -12,8 +15,8 @@ namespace CaptionTranslator.Translation
             "config.json",
             "source.spm",
             "vocab.json",
-            "onnx/encoder_model.onnx",
-            "onnx/decoder_model_merged.onnx",
+            "onnx/" + EncoderFile,
+            "onnx/" + DecoderFile,
         };
 
         public static string Directory { get; } = Path.Combine(AppPaths.DataDirectory, "models", "opus-mt-de-en");

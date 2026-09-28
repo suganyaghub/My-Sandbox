@@ -17,7 +17,9 @@ namespace CaptionTranslator.Tests
                 Assert.Inconclusive("No Teams meeting with live captions open: " + result.Status);
 
             Console.WriteLine($"Segments: {result.Segments.Count}, speakers: {result.Segments.Select(segment => segment.Speaker).Distinct().Count()}");
-            Assert.IsTrue(result.Segments.All(segment => segment.Speaker.Length > 0 && segment.Text.Length > 0));
+            // Teams also shows system lines without a speaker (e.g. "Transcription has started…"), so not every line has one.
+            Assert.IsTrue(result.Segments.All(segment => segment.Text.Length > 0));
+            Assert.IsTrue(result.Segments.Any(segment => segment.Speaker.Length > 0));
             Assert.IsFalse(result.Segments.Any(segment => segment.Text.Contains("Live Captions")));
         }
     }

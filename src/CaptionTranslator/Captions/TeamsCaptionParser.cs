@@ -31,15 +31,17 @@ namespace CaptionTranslator.Captions
                     continue;
 
                 if (texts.Count == 1)
-                    segments.Add(new CaptionSegment(string.Empty, texts[0]));
+                    segments.Add(new CaptionSegment(string.Empty, texts[0], IdOf(item)));
                 else
-                    segments.Add(new CaptionSegment(texts[0], string.Join(" ", texts.Skip(1))));
+                    segments.Add(new CaptionSegment(texts[0], string.Join(" ", texts.Skip(1)), IdOf(item)));
             }
 
             return segments;
         }
 
         public static int CountTexts(UiNode node) => CollectTexts(node).Count;
+
+        private static string? IdOf(UiNode item) => item.RuntimeId.Length > 0 ? item.RuntimeId : null;
 
         /// <summary>
         /// The caption pane also holds a header text and buttons, and the list sits several wrapper groups deep.

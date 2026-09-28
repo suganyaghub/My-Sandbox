@@ -14,6 +14,25 @@ namespace CaptionTranslator
 
         public bool Topmost { get; set; } = true;
 
+        public bool ReadAloud { get; set; }
+
+        public string? Voice { get; set; }
+
+        /// <summary>Speech rate from -10 to 10; 0 is normal.</summary>
+        public int SpeechRate { get; set; }
+
+        /// <summary>Output device for reading aloud; null = Windows default device.</summary>
+        public string? AudioDeviceId { get; set; }
+
+        /// <summary>Reading voice loudness in percent of the device volume (the Windows volume itself is never changed).</summary>
+        public int ReadAloudVolume { get; set; } = 80;
+
+        /// <summary>Do not read aloud lines spoken by <see cref="MyName"/>.</summary>
+        public bool SkipMyLines { get; set; } = true;
+
+        /// <summary>The user's name as Teams shows it in the captions. Prefilled from the Windows display name.</summary>
+        public string? MyName { get; set; }
+
         public double FontSize { get; set; } = 18;
 
         /// <summary>Regex matched against Name/AutomationId of Teams UI elements to find the caption area. Edit if Teams changes.</summary>

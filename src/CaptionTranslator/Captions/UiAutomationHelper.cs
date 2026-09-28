@@ -52,6 +52,7 @@ namespace CaptionTranslator.Captions
             request.Add(AutomationElement.AutomationIdProperty);
             request.Add(AutomationElement.ClassNameProperty);
             request.Add(AutomationElement.ControlTypeProperty);
+            request.Add(AutomationElement.RuntimeIdProperty);
 
             AutomationElement cached = element.GetUpdatedCache(request);
             return Convert(cached, 0);
@@ -81,7 +82,8 @@ namespace CaptionTranslator.Captions
                 cached.GetCachedPropertyValue(AutomationElement.NameProperty) as string ?? string.Empty,
                 cached.GetCachedPropertyValue(AutomationElement.AutomationIdProperty) as string ?? string.Empty,
                 cached.GetCachedPropertyValue(AutomationElement.ClassNameProperty) as string ?? string.Empty,
-                children);
+                children,
+                cached.GetCachedPropertyValue(AutomationElement.RuntimeIdProperty) is int[] runtimeId ? string.Join(".", runtimeId) : string.Empty);
         }
 
         private static void Append(StringBuilder builder, UiNode node, int indent)
