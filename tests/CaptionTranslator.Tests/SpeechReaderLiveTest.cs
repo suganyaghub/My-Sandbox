@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using CaptionTranslator.Speech;
+using CaptionTranslator.Speech.Piper;
 using NAudio.Wave;
 
 namespace CaptionTranslator.Tests
@@ -16,11 +17,13 @@ namespace CaptionTranslator.Tests
         [TestMethod]
         public void Synthesize_EnglishSentence_ProducesAudibleWave()
         {
-            using SpeechReader reader = new SpeechReader();
-            if (reader.Voices.Count == 0)
+            IReadOnlyList<string> voices = WindowsVoice.GetInstalledNames();
+            if (voices.Count == 0)
                 Assert.Inconclusive("No Windows voices installed.");
+            using SpeechReader reader = new SpeechReader();
+            reader.SetVoice(new WindowsVoice(voices[0]));
 
-            byte[] wav = reader.Synthesize("This is a test of the caption translator voice.");
+            byte[] wav = reader.SynthesizeAll("This is a test of the caption translator voice.")[0];
 
             using WaveFileReader wave = new WaveFileReader(new MemoryStream(wav));
             ISampleProvider samples = wave.ToSampleProvider();
@@ -44,13 +47,15 @@ namespace CaptionTranslator.Tests
         [TestMethod]
         public async Task SpeakNowAsync_EachConnectedDevice_PlaysForTheLengthOfTheAudio()
         {
-            using SpeechReader reader = new SpeechReader();
-            if (reader.Voices.Count == 0)
+            IReadOnlyList<string> voices = WindowsVoice.GetInstalledNames();
+            if (voices.Count == 0)
                 Assert.Inconclusive("No Windows voices installed.");
+            using SpeechReader reader = new SpeechReader();
+            reader.SetVoice(new WindowsVoice(voices[0]));
 
             const string sentence = "Testing the output device.";
             TimeSpan expected;
-            using (WaveFileReader wave = new WaveFileReader(new MemoryStream(reader.Synthesize(sentence))))
+            using (WaveFileReader wave = new WaveFileReader(new MemoryStream(reader.SynthesizeAll(sentence)[0])))
                 expected = wave.TotalTime;
 
             IReadOnlyList<AudioOutputDevice> devices = AudioOutputDevice.GetConnected();
@@ -71,9 +76,11 @@ namespace CaptionTranslator.Tests
         [TestMethod]
         public async Task SpeakNowAsync_AnyVolume_DoesNotChangeWindowsDeviceVolume()
         {
-            using SpeechReader reader = new SpeechReader();
-            if (reader.Voices.Count == 0)
+            IReadOnlyList<string> voices = WindowsVoice.GetInstalledNames();
+            if (voices.Count == 0)
                 Assert.Inconclusive("No Windows voices installed.");
+            using SpeechReader reader = new SpeechReader();
+            reader.SetVoice(new WindowsVoice(voices[0]));
 
             using NAudio.CoreAudioApi.MMDeviceEnumerator enumerator = new NAudio.CoreAudioApi.MMDeviceEnumerator();
             using NAudio.CoreAudioApi.MMDevice device = enumerator.GetDefaultAudioEndpoint(NAudio.CoreAudioApi.DataFlow.Render, NAudio.CoreAudioApi.Role.Multimedia);
@@ -90,9 +97,11 @@ namespace CaptionTranslator.Tests
         [TestMethod]
         public async Task SpeakNowAsync_Cancelled_StopsEarly()
         {
-            using SpeechReader reader = new SpeechReader();
-            if (reader.Voices.Count == 0)
+            IReadOnlyList<string> voices = WindowsVoice.GetInstalledNames();
+            if (voices.Count == 0)
                 Assert.Inconclusive("No Windows voices installed.");
+            using SpeechReader reader = new SpeechReader();
+            reader.SetVoice(new WindowsVoice(voices[0]));
 
             using CancellationTokenSource cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(500));
             Stopwatch stopwatch = Stopwatch.StartNew();
@@ -101,6 +110,32 @@ namespace CaptionTranslator.Tests
 
             Console.WriteLine($"Stopped after {stopwatch.Elapsed.TotalSeconds:F2} s");
             Assert.IsTrue(stopwatch.Elapsed < TimeSpan.FromSeconds(2.5));
+        }
+
+        [TestMethod]
+        public async Task SpeakNowAsync_PiperVoiceTwoClauses_PlaysAllPartsWithoutLongGaps()
+        {
+            PiperVoiceInfo kristin = PiperVoiceCatalog.Find("en_US-kristin-medium")!;
+            VoiceFiles files = new VoiceFiles();
+            if (!files.IsDownloaded(kristin) || EspeakPhonemizer.Shared == null)
+                Assert.Inconclusive("Kristin voice or espeak-ng not available.");
+            const string sentence = "Good morning everyone, let's start with the status of the project.";
+            using SpeechReader reader = new SpeechReader();
+            reader.SetVoice(PiperVoice.Load(files.ModelPath(kristin), files.ConfigPath(kristin), EspeakPhonemizer.Shared));
+            TimeSpan audio = TimeSpan.Zero;
+            foreach (byte[] part in reader.SynthesizeAll(sentence))
+            {
+                using WaveFileReader wave = new WaveFileReader(new MemoryStream(part));
+                audio += wave.TotalTime;
+            }
+
+            Stopwatch stopwatch = Stopwatch.StartNew();
+            await reader.SpeakNowAsync(sentence, 0f, CancellationToken.None);
+
+            // First part is synthesized before playback starts; later parts are made while the previous one plays.
+            Console.WriteLine($"Audio {audio.TotalSeconds:F2} s, played in {stopwatch.Elapsed.TotalSeconds:F2} s");
+            Assert.IsGreaterThan(audio * 0.9, stopwatch.Elapsed);
+            Assert.IsLessThan(audio + TimeSpan.FromSeconds(1.5), stopwatch.Elapsed);
         }
     }
 }

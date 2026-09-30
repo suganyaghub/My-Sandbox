@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Net.Http;
 using System.Text;
 using System.Windows;
 using System.Windows.Controls;
@@ -10,7 +11,9 @@ using System.Windows.Media;
 using System.Windows.Media.Animation;
 using CaptionTranslator.Captions;
 using CaptionTranslator.Speech;
+using CaptionTranslator.Speech.Piper;
 using CaptionTranslator.Translation;
+using Microsoft.ML.OnnxRuntime;
 
 namespace CaptionTranslator
 {
@@ -29,6 +32,11 @@ namespace CaptionTranslator
         private string sourceStatus = "Starting…";
         private string modelStatus = "Loading translation model…";
         private SpeechReader? speechReader;
+        private readonly VoiceFiles voiceFiles = new VoiceFiles();
+        private IReadOnlyList<VoiceOption> voiceOptions = Array.Empty<VoiceOption>();
+        private VoiceOption? activeVoice;
+        private CancellationTokenSource? voiceSelection;
+        private bool updatingVoiceBox;
         private volatile bool readAloudActive;
         private bool refreshingDevices;
         private bool followLatest = true;
@@ -431,17 +439,22 @@ namespace CaptionTranslator
 
         private void InitializeSpeech()
         {
+            IReadOnlyList<string> windowsVoices = Array.Empty<string>();
             try
             {
                 this.speechReader = new SpeechReader();
+                windowsVoices = WindowsVoice.GetInstalledNames();
             }
             catch (Exception exception)
             {
-                // No speech engine or voices on this PC: the app works without reading aloud.
-                Log.Error("Read aloud not available.", exception);
+                // No speech engine on this PC: the app works without reading aloud (or with natural voices only).
+                Log.Error("Windows voices not available.", exception);
             }
 
-            if (this.speechReader == null || this.speechReader.Voices.Count == 0)
+            bool naturalAvailable = EspeakPhonemizer.Shared != null;
+            this.voiceOptions = VoiceOptions.Build(windowsVoices, PiperVoiceCatalog.All, naturalAvailable);
+
+            if (this.speechReader == null || this.voiceOptions.Count == 0)
             {
                 this.ReadAloudToggle.IsEnabled = false;
                 this.VoiceBox.IsEnabled = false;
@@ -451,14 +464,33 @@ namespace CaptionTranslator
                 this.VolumeSlider.IsEnabled = false;
                 this.SkipMyLinesSwitch.IsEnabled = false;
                 this.MyNameBox.IsEnabled = false;
-                this.ReadAloudToggle.ToolTip = "No Windows voices installed.";
+                this.ReadAloudToggle.ToolTip = "No voices available on this PC.";
                 return;
             }
 
-            this.VoiceBox.ItemsSource = this.speechReader.Voices;
-            this.VoiceBox.SelectedItem = this.settings.Voice != null && this.speechReader.Voices.Contains(this.settings.Voice)
-                ? this.settings.Voice
-                : this.speechReader.Voices[0];
+            FillVoiceBox();
+            if (!naturalAvailable)
+                SetVoiceStatus("Natural voices unavailable – see log", false);
+
+            // Start with a Windows voice so reading works at once; a saved natural voice replaces it when loaded (a few seconds).
+            VoiceOption? saved = VoiceOptions.Resolve(this.voiceOptions, this.settings.Voice);
+            VoiceOption? start = saved != null && !saved.Id.IsNatural ? saved : this.voiceOptions.FirstOrDefault(option => !option.Id.IsNatural);
+            if (start != null)
+                ActivateWindowsVoice(start, save: false);
+
+            if (saved?.Natural != null)
+            {
+                if (this.voiceFiles.IsDownloaded(saved.Natural))
+                {
+                    SelectVoiceBoxItem(saved);
+                    _ = UseNaturalVoiceAsync(saved);
+                }
+                else
+                {
+                    Log.Info($"Saved natural voice {saved.Id} is not downloaded; using {start?.Id}.");
+                    SetVoiceStatus($"{saved.DisplayName} is not downloaded – select it to download", false);
+                }
+            }
 
             int speedIndex = this.SpeedBox.Items.Cast<ComboBoxItem>().ToList().FindIndex(item => (string)item.Tag == this.settings.SpeechRate.ToString());
             this.SpeedBox.SelectedIndex = speedIndex >= 0 ? speedIndex : 1;
@@ -481,7 +513,7 @@ namespace CaptionTranslator
         private void UpdateReadAloud()
         {
             bool isLiveCaptions = this.settings.Source == AppSettings.LiveCaptionsSource;
-            if (this.speechReader != null && this.speechReader.Voices.Count > 0)
+            if (this.speechReader != null && this.voiceOptions.Count > 0)
             {
                 this.ReadAloudToggle.IsEnabled = !isLiveCaptions;
                 this.ReadAloudToggle.ToolTip = isLiveCaptions
@@ -550,13 +582,149 @@ namespace CaptionTranslator
                 line.IsMe = SpeakerMatcher.IsSameSpeaker(line.Speaker, this.myName);
         }
 
-        private void OnVoiceChanged(object sender, SelectionChangedEventArgs e)
+        private async void OnVoiceChanged(object sender, SelectionChangedEventArgs e)
         {
-            if (this.VoiceBox.SelectedItem is string voice)
+            if (this.updatingVoiceBox || (this.VoiceBox.SelectedItem as ComboBoxItem)?.Tag is not VoiceOption option || option == this.activeVoice)
+                return;
+
+            this.voiceSelection?.Cancel();
+            if (option.Natural == null)
             {
-                this.settings.Voice = voice;
-                this.speechReader?.SetVoice(voice);
+                SetVoiceStatus(null, false);
+                ActivateWindowsVoice(option, save: true);
+                return;
             }
+
+            await UseNaturalVoiceAsync(option);
+        }
+
+        private void OnCancelVoiceDownloadClick(object sender, RoutedEventArgs e) => this.voiceSelection?.Cancel();
+
+        private void ActivateWindowsVoice(VoiceOption option, bool save)
+        {
+            try
+            {
+                this.speechReader?.SetVoice(new WindowsVoice(option.Id.Name));
+                this.activeVoice = option;
+                if (save)
+                    this.settings.Voice = option.Id.ToString();
+                SelectVoiceBoxItem(option);
+            }
+            catch (ArgumentException exception)
+            {
+                Log.Error($"Windows voice '{option.Id.Name}' could not be selected.", exception);
+                SetVoiceStatus("This Windows voice is not available", false);
+            }
+        }
+
+        /// <summary>Downloads the voice if needed, loads it and switches to it. The previous voice keeps reading meanwhile.</summary>
+        private async Task UseNaturalVoiceAsync(VoiceOption option)
+        {
+            PiperVoiceInfo info = option.Natural!;
+            EspeakPhonemizer? phonemizer = EspeakPhonemizer.Shared;
+            if (phonemizer == null || this.speechReader == null)
+                return;
+
+            CancellationTokenSource selection = new CancellationTokenSource();
+            this.voiceSelection = selection;
+            try
+            {
+                if (!this.voiceFiles.IsDownloaded(info))
+                {
+                    SetVoiceStatus($"Downloading {option.DisplayName}… 0 %", true);
+                    Progress<int> progress = new Progress<int>(percent =>
+                    {
+                        if (!selection.IsCancellationRequested)
+                            SetVoiceStatus($"Downloading {option.DisplayName}… {percent} %", true);
+                    });
+                    await Task.Run(() => this.voiceFiles.DownloadAsync(info, progress, selection.Token));
+                    FillVoiceBox();
+                    SelectVoiceBoxItem(option);
+                }
+
+                SetVoiceStatus($"Loading {option.DisplayName}…", false);
+                PiperVoice voice = await Task.Run(() => PiperVoice.Load(this.voiceFiles.ModelPath(info), this.voiceFiles.ConfigPath(info), phonemizer));
+                if (selection.IsCancellationRequested)
+                {
+                    // Another voice was chosen while this one was loading.
+                    voice.Dispose();
+                    return;
+                }
+
+                this.speechReader.SetVoice(voice);
+                this.activeVoice = option;
+                this.settings.Voice = option.Id.ToString();
+                SetVoiceStatus(null, false);
+                Log.Info($"Natural voice {info.Id} in use.");
+            }
+            catch (OperationCanceledException) when (selection.IsCancellationRequested)
+            {
+                if (this.voiceSelection == selection)
+                {
+                    SetVoiceStatus(null, false);
+                    SelectVoiceBoxItem(this.activeVoice);
+                }
+            }
+            catch (Exception exception) when (exception is HttpRequestException || exception is TaskCanceledException || exception is IOException
+                                              || exception is OnnxRuntimeException || exception is System.Text.Json.JsonException
+                                              || exception is KeyNotFoundException || exception is NotSupportedException || exception is InvalidOperationException)
+            {
+                Log.Error($"Natural voice {info.Id} could not be used.", exception);
+                bool network = exception is HttpRequestException || exception is TaskCanceledException;
+                SetVoiceStatus(network ? "Download failed – check internet connection" : "Voice could not be loaded – see log", false);
+                SelectVoiceBoxItem(this.activeVoice);
+            }
+        }
+
+        private void FillVoiceBox()
+        {
+            this.updatingVoiceBox = true;
+            this.VoiceBox.Items.Clear();
+            AddVoiceGroup("NATURAL VOICES", this.voiceOptions.Where(option => option.Natural != null));
+            AddVoiceGroup("WINDOWS VOICES", this.voiceOptions.Where(option => option.Natural == null));
+            this.updatingVoiceBox = false;
+        }
+
+        private void AddVoiceGroup(string header, IEnumerable<VoiceOption> options)
+        {
+            List<VoiceOption> group = options.ToList();
+            if (group.Count == 0)
+                return;
+
+            this.VoiceBox.Items.Add(new ComboBoxItem
+            {
+                Content = header,
+                IsEnabled = false,
+                FontSize = 11,
+                Foreground = (Brush)FindResource("FaintBrush"),
+            });
+            foreach (VoiceOption option in group)
+                this.VoiceBox.Items.Add(new ComboBoxItem { Content = VoiceLabel(option), Tag = option });
+        }
+
+        private string VoiceLabel(VoiceOption option)
+        {
+            if (option.Natural == null)
+                return option.DisplayName;
+
+            return this.voiceFiles.IsDownloaded(option.Natural)
+                ? $"{option.DisplayName}  ✓"
+                : $"{option.DisplayName} · {option.Natural.SizeMegabytes} MB";
+        }
+
+        private void SelectVoiceBoxItem(VoiceOption? option)
+        {
+            this.updatingVoiceBox = true;
+            this.VoiceBox.SelectedItem = this.VoiceBox.Items.OfType<ComboBoxItem>().FirstOrDefault(item => Equals(item.Tag, option));
+            this.updatingVoiceBox = false;
+        }
+
+        /// <param name="message">Null hides the status line.</param>
+        private void SetVoiceStatus(string? message, bool canCancel)
+        {
+            this.VoiceStatusPanel.Visibility = message == null ? Visibility.Collapsed : Visibility.Visible;
+            this.VoiceStatusText.Text = message ?? string.Empty;
+            this.VoiceCancelLink.Visibility = canCancel ? Visibility.Visible : Visibility.Collapsed;
         }
 
         private void OnSpeedChanged(object sender, SelectionChangedEventArgs e)

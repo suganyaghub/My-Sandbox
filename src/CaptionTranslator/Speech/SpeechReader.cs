@@ -1,19 +1,18 @@
-using System.Speech.Synthesis;
-
 namespace CaptionTranslator.Speech
 {
     /// <summary>
-    /// Reads translated lines aloud with the offline Windows (SAPI) voices, one line after another,
-    /// on the selected output device. Says the speaker's name when the speaker changes.
+    /// Reads translated lines aloud with the current <see cref="IVoice"/>, one line after another, on the selected
+    /// output device. Says the speaker's name when the speaker changes. Part n+1 of a line is synthesized while part n plays.
     /// </summary>
     public sealed class SpeechReader : IDisposable
     {
         private const int maxPendingLines = 2;
 
-        private readonly SpeechSynthesizer synthesizer = new SpeechSynthesizer();
-        private readonly object synthesizerLock = new object();
         private readonly SpeechQueue queue = new SpeechQueue(maxPendingLines);
         private readonly CancellationTokenSource shutdown = new CancellationTokenSource();
+        private readonly object voiceLock = new object();
+        private IVoice? voice;
+        private volatile int rate;
         private string lastSpeaker = string.Empty;
         private volatile string? deviceId;
         private float volume = 1f;
@@ -21,35 +20,28 @@ namespace CaptionTranslator.Speech
 
         public SpeechReader()
         {
-            this.Voices = this.synthesizer.GetInstalledVoices()
-                                          .Where(voice => voice.Enabled)
-                                          .Select(voice => voice.VoiceInfo)
-                                          .OrderBy(voice => voice.Culture.TwoLetterISOLanguageName == "en" ? 0 : 1)
-                                          .ThenBy(voice => voice.Name)
-                                          .Select(voice => voice.Name)
-                                          .ToList();
             _ = Task.Run(() => SpeakLoopAsync(this.shutdown.Token));
         }
 
-        /// <summary>Installed voices, English first.</summary>
-        public IReadOnlyList<string> Voices { get; }
-
-        public void SetVoice(string? voiceName)
+        /// <summary>
+        /// Uses <paramref name="newVoice"/> from the next part on (null = silent). The reader owns the voice: the previous
+        /// one is disposed in the background after its current part (never on the calling UI thread).
+        /// </summary>
+        public void SetVoice(IVoice? newVoice)
         {
-            string? name = voiceName != null && this.Voices.Contains(voiceName) ? voiceName : this.Voices.FirstOrDefault();
-            if (name == null)
-                return;
+            IVoice? old;
+            lock (this.voiceLock)
+            {
+                old = this.voice;
+                this.voice = newVoice;
+            }
 
-            lock (this.synthesizerLock)
-                this.synthesizer.SelectVoice(name);
+            if (old != null)
+                _ = Task.Run(old.Dispose);
         }
 
         /// <summary>Speed from -10 (slowest) to 10 (fastest); 0 is normal.</summary>
-        public void SetRate(int rate)
-        {
-            lock (this.synthesizerLock)
-                this.synthesizer.Rate = Math.Clamp(rate, -10, 10);
-        }
+        public void SetRate(int value) => this.rate = Math.Clamp(value, -10, 10);
 
         /// <summary>Output device id from <see cref="AudioOutputDevice"/>; null = Windows default device.</summary>
         public void SetDevice(string? outputDeviceId) => this.deviceId = outputDeviceId;
@@ -82,36 +74,87 @@ namespace CaptionTranslator.Speech
             this.currentLine.Cancel();
         }
 
-        /// <summary>Renders text to WAV in memory with the current voice and speed.</summary>
-        public byte[] Synthesize(string text)
+        /// <summary>All WAV parts of a text with the current voice (used by tests). Empty if there is no voice.</summary>
+        public IReadOnlyList<byte[]> SynthesizeAll(string text)
         {
-            using MemoryStream wav = new MemoryStream();
-            lock (this.synthesizerLock)
-            {
-                this.synthesizer.SetOutputToWaveStream(wav);
-                try
-                {
-                    this.synthesizer.Speak(text);
-                }
-                finally
-                {
-                    this.synthesizer.SetOutputToNull();
-                }
-            }
-
-            return wav.ToArray();
+            IVoice? speaking;
+            lock (this.voiceLock)
+                speaking = this.voice;
+            return speaking?.SynthesizeWavChunks(text, this.rate).ToList() ?? new List<byte[]>();
         }
 
-        /// <summary>Speaks one text immediately on the selected device (used by the "Test" button).</summary>
-        public Task SpeakNowAsync(string text, float volume, CancellationToken cancellationToken)
-            => AudioPlayer.PlayAsync(Synthesize(text), this.deviceId, volume, cancellationToken);
+        /// <summary>Speaks one text now on the selected device (also used by the "Test" button).</summary>
+        public async Task SpeakNowAsync(string text, float volume, CancellationToken cancellationToken)
+        {
+            IVoice? speaking;
+            lock (this.voiceLock)
+                speaking = this.voice;
+            if (speaking == null)
+                return;
+
+            using IEnumerator<byte[]> parts = speaking.SynthesizeWavChunks(text, this.rate).GetEnumerator();
+            Task<byte[]?> next = Task.Run(() => NextPart(speaking, parts), CancellationToken.None);
+            try
+            {
+                while (await next.ConfigureAwait(false) is byte[] part)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    next = Task.Run(() => NextPart(speaking, parts), CancellationToken.None);
+                    await AudioPlayer.PlayAsync(part, this.deviceId, volume, cancellationToken).ConfigureAwait(false);
+                }
+            }
+            finally
+            {
+                // The worker may still use the enumerator; wait for it before the enumerator is disposed.
+                await WaitForPendingPartAsync(next).ConfigureAwait(false);
+            }
+        }
 
         public void Dispose()
         {
             this.shutdown.Cancel();
             this.currentLine.Cancel();
-            lock (this.synthesizerLock)
-                this.synthesizer.Dispose();
+            IVoice? old;
+            lock (this.voiceLock)
+            {
+                old = this.voice;
+                this.voice = null;
+            }
+
+            old?.Dispose();
+        }
+
+        /// <summary>Next WAV part, or null at the end of the text or when the voice was replaced meanwhile.</summary>
+        private byte[]? NextPart(IVoice speaking, IEnumerator<byte[]> parts)
+        {
+            lock (this.voiceLock)
+            {
+                if (!ReferenceEquals(speaking, this.voice))
+                    return null;
+            }
+
+            try
+            {
+                return parts.MoveNext() ? parts.Current : null;
+            }
+            catch (ObjectDisposedException)
+            {
+                // The voice was replaced (and disposed) while this part was being made: end the line quietly.
+                return null;
+            }
+        }
+
+        private static async Task WaitForPendingPartAsync(Task<byte[]?> pending)
+        {
+            try
+            {
+                await pending.ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                // The line was stopped or has already failed; this part is not played. The reason stays in the log.
+                Log.Info("Read aloud: discarded a part: " + exception.Message);
+            }
         }
 
         private async Task SpeakLoopAsync(CancellationToken cancellationToken)
