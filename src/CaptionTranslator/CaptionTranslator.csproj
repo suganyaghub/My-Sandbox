@@ -17,4 +17,9 @@
     <Resource Include="Assets/AppIcon.ico" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Include="..\..\third_party\espeak-ng\libespeak-ng.dll" Link="libespeak-ng.dll" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <None Include="..\..\third_party\espeak-ng\espeak-ng-data\**\*" LinkBase="espeak-ng-data" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>
