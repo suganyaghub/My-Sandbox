@@ -7,6 +7,7 @@ namespace CaptionTranslator.Speech
     public sealed class SpeechReader : IDisposable
     {
         private const int maxPendingLines = 2;
+        private const int slowPartMilliseconds = 1500;
 
         private readonly SpeechQueue queue = new SpeechQueue(maxPendingLines);
         private readonly CancellationTokenSource shutdown = new CancellationTokenSource();
@@ -37,7 +38,7 @@ namespace CaptionTranslator.Speech
             }
 
             if (old != null)
-                _ = Task.Run(old.Dispose);
+                _ = Task.Run(() => DisposeVoice(old));
         }
 
         /// <summary>Speed from -10 (slowest) to 10 (fastest); 0 is normal.</summary>
@@ -135,13 +136,24 @@ namespace CaptionTranslator.Speech
 
             try
             {
-                return parts.MoveNext() ? parts.Current : null;
+                System.Diagnostics.Stopwatch stopwatch = System.Diagnostics.Stopwatch.StartNew();
+                byte[]? part = parts.MoveNext() ? parts.Current : null;
+                if (stopwatch.ElapsedMilliseconds > slowPartMilliseconds)
+                    Log.Info($"Read aloud: slow part ({speaking.GetType().Name}, {stopwatch.ElapsedMilliseconds} ms).");
+                return part;
             }
             catch (ObjectDisposedException)
             {
                 // The voice was replaced (and disposed) while this part was being made: end the line quietly.
                 return null;
             }
+        }
+
+        private static void DisposeVoice(IVoice old)
+        {
+            System.Diagnostics.Stopwatch stopwatch = System.Diagnostics.Stopwatch.StartNew();
+            old.Dispose();
+            Log.Info($"Read aloud: previous voice ({old.GetType().Name}) released after {stopwatch.ElapsedMilliseconds} ms.");
         }
 
         private static async Task WaitForPendingPartAsync(Task<byte[]?> pending)

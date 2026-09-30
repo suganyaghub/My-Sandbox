@@ -148,3 +148,14 @@ Deleting voices in the app, preview before download, non-English voices, multi-s
   Piper's pauses.
 - Short texts ("Yes.") and names: pronunciation quality depends on espeak-ng.
 - CPU load while translation runs at the same time — measured in step 0.
+
+## Changes during implementation (2026-09-30)
+
+- espeak-ng data trimmed to English only: 1.6 MB instead of 24 MB (checked with the spike).
+- `LICENSE` is the GPL-3.0 text shipped with Git for Windows (`gcc-libs/COPYING3`), no download needed.
+- User test: voices work. User reported that switching the voice "sometimes hangs"; not fixed on request.
+  An automated UI Automation test (20 fast switches) kept the window responsive. The log showed voice loading takes
+  4–13 s (longest at app start, when the translation model loads too), and fast switching starts several loads in
+  parallel, which slows speech parts to up to 2.8 s. Diagnostics kept in the app: voice switch/load timings,
+  "slow part" lines (> 1.5 s), and a UI watchdog that logs when the window stops responding for > 2 s.
+- Not verified: pronunciation quality of each voice, and gender of the voices (display names have no gender).

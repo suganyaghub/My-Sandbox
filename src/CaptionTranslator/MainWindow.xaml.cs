@@ -33,6 +33,7 @@ namespace CaptionTranslator
         private string modelStatus = "Loading translation model…";
         private SpeechReader? speechReader;
         private readonly VoiceFiles voiceFiles = new VoiceFiles();
+        private readonly UiWatchdog uiWatchdog = new UiWatchdog(System.Windows.Threading.Dispatcher.CurrentDispatcher);
         private IReadOnlyList<VoiceOption> voiceOptions = Array.Empty<VoiceOption>();
         private VoiceOption? activeVoice;
         private CancellationTokenSource? voiceSelection;
@@ -100,10 +101,12 @@ namespace CaptionTranslator
 
             UpdateStatus();
             _ = LoadTranslatorAsync();
+            this.uiWatchdog.Start();
         }
 
         private void OnClosing(object? sender, CancelEventArgs e)
         {
+            this.uiWatchdog.Dispose();
             this.settings.Save();
             this.pipeline.Dispose();
             this.speechReader?.Dispose();
@@ -587,6 +590,7 @@ namespace CaptionTranslator
             if (this.updatingVoiceBox || (this.VoiceBox.SelectedItem as ComboBoxItem)?.Tag is not VoiceOption option || option == this.activeVoice)
                 return;
 
+            Log.Info($"Voice selected: {option.Id} (in use: {this.activeVoice?.Id}).");
             this.voiceSelection?.Cancel();
             if (option.Natural == null)
             {
@@ -604,11 +608,13 @@ namespace CaptionTranslator
         {
             try
             {
+                Stopwatch stopwatch = Stopwatch.StartNew();
                 this.speechReader?.SetVoice(new WindowsVoice(option.Id.Name));
                 this.activeVoice = option;
                 if (save)
                     this.settings.Voice = option.Id.ToString();
                 SelectVoiceBoxItem(option);
+                Log.Info($"Windows voice {option.Id.Name} in use ({stopwatch.ElapsedMilliseconds} ms).");
             }
             catch (ArgumentException exception)
             {
@@ -643,7 +649,10 @@ namespace CaptionTranslator
                 }
 
                 SetVoiceStatus($"Loading {option.DisplayName}…", false);
+                Log.Info($"Loading natural voice {info.Id}…");
+                Stopwatch stopwatch = Stopwatch.StartNew();
                 PiperVoice voice = await Task.Run(() => PiperVoice.Load(this.voiceFiles.ModelPath(info), this.voiceFiles.ConfigPath(info), phonemizer));
+                Log.Info($"Natural voice {info.Id} loaded in {stopwatch.ElapsedMilliseconds} ms{(selection.IsCancellationRequested ? " (not used: another voice was chosen)" : string.Empty)}.");
                 if (selection.IsCancellationRequested)
                 {
                     // Another voice was chosen while this one was loading.
