@@ -29,6 +29,22 @@ Measure model load time and time-to-audio per sentence.
   (`input` int64 [1,N], `input_lengths` int64 [1], `scales` float [3], no `sid` for single-speaker voices).
 - Record measured sizes of `libespeak-ng.dll` + `espeak-ng-data`.
 
+### Step 0 results (2026-09-30, en_US-kristin-medium, 19-word sentence, 5.4 s audio)
+
+| Mode | Idle | Translator busy nonstop |
+|---|---|---|
+| Whole sentence at once | 410–750 ms | 670–1200 ms (criterion missed) |
+| Clause by clause: first audio | 105–141 ms | 189–279 ms |
+| Clause by clause: all clauses | 440–520 ms | 735–1241 ms |
+| Windows SAPI (reference) | ~25 ms | – |
+
+Decision: **synthesize and play clause by clause** (user choice). The next clause is synthesized while the current one
+plays; in the test it was always ready before the first clause finished (no gap). Voice load ≈ 6 s (once).
+espeak-ng: `libespeak-ng.dll` 468 KB, x64; full `espeak-ng-data` 24 MB (trim to English). The 1.52.0 MSI is
+**not Authenticode-signed** (SHA-256 `7f673c70…eafb9`). Input/output names confirmed: `input`, `input_lengths`,
+`scales` → `output` [1,1,1,T] float at 22050 Hz. All phonemes of the test sentence were in `phoneme_id_map`.
+The voice's `espeak.voice` value (`en` for Kristin) is used as-is.
+
 ## Voice catalog
 
 Only voices whose dataset license allows free use (checked on each `MODEL_CARD`, 2026-09-30):
@@ -65,7 +81,10 @@ PiperVoiceCatalog (fixed list above)     VoiceFiles (download to %LOCALAPPDATA%\
 
 ### Components
 
-- **`IVoice`** — `byte[] SynthesizeWav(string text, int rate)`; `IDisposable`. `rate` is −10…10 (as today).
+- **`IVoice`** — `IEnumerable<byte[]> SynthesizeWavChunks(string text, int rate)`: lazily yields one WAV per
+  clause (Piper) or one WAV for the whole text (Windows). `IDisposable`. `rate` is −10…10 (as today).
+- **`SpeechReader`** plays chunk *n* while chunk *n+1* is being synthesized on a worker task. Cancellation
+  (Stop / new line dropped) stops both.
 - **`WindowsVoice`** — wraps `SpeechSynthesizer` for one SAPI voice. Behaviour identical to today.
 - **`PiperVoiceConfig`** — parsed `.onnx.json`: `audio.sample_rate`, `espeak.voice`, `inference`
   (`noise_scale`, `length_scale`, `noise_w`), `phoneme_id_map` (IPA string → ids).
@@ -75,7 +94,7 @@ PiperVoiceCatalog (fixed list above)     VoiceFiles (download to %LOCALAPPDATA%\
   `espeak_SetVoiceByName`, `espeak_TextToPhonemes` (IPA mode). Text is first split into clauses at
   `. , ? ! ; :` by **`ClauseSplitter`** (pure, unit-tested); each clause is phonemized and its punctuation
   character is appended so Piper produces natural pauses. One instance, all calls under a lock.
-- **`PiperVoice`** — owns one `InferenceSession` (4 intra-op threads, like the translator). Runs the model,
+- **`PiperVoice`** — splits text with `ClauseSplitter`, synthesizes each clause on demand; owns one `InferenceSession` (4 intra-op threads, like the translator). Runs the model,
   converts float samples to 16-bit PCM WAV at the voice's sample rate. `length_scale` =
   config value × `RateToLengthScale(rate)` (pure: 0 → 1.0, +10 → 0.5, −10 → 2.0, geometric).
 - **`PiperVoiceCatalog`** — the table above as code (id, display name, relative HF folder, size, license).
@@ -124,6 +143,7 @@ Deleting voices in the app, preview before download, non-English voices, multi-s
 
 ## Open risks
 
+- A long sentence without any punctuation is one clause and still takes the whole-sentence time.
 - espeak-ng without Piper's patched "terminator" API: clause splitting is our own and may differ slightly from
   Piper's pauses.
 - Short texts ("Yes.") and names: pronunciation quality depends on espeak-ng.
