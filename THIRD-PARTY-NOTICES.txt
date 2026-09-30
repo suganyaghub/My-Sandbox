@@ -1,0 +1,19 @@
+Caption Translator is licensed under the GNU General Public License v3.0 (see LICENSE),
+because it includes espeak-ng. Source code: https://github.com/suganyaghub/My-Sandbox
+
+Included in the download
+- espeak-ng 1.52.0 - GPL-3.0-or-later - https://github.com/espeak-ng/espeak-ng
+- ONNX Runtime - MIT - https://github.com/microsoft/onnxruntime
+- NAudio - MIT - https://github.com/naudio/NAudio
+
+Downloaded by the app on first use
+- OPUS-MT German-English model (Helsinki-NLP, ONNX export by Xenova) - CC-BY 4.0
+  https://huggingface.co/Xenova/opus-mt-de-en
+- Piper voices (rhasspy/piper-voices, MIT) - https://huggingface.co/rhasspy/piper-voices
+  Training data licenses:
+  - Kristin, John, Norman, Cori (LibriVox recordings) - public domain
+  - Linda (LJ Speech, https://keithito.com/LJ-Speech-Dataset/) - public domain
+  - Bryce - public domain
+  - Joe, Mike (https://github.com/OHF-Voice/voice-datasets) - CC0
+  - Alba (https://datashare.ed.ac.uk/handle/10283/3270) - CC BY 4.0
+  - Northern English (OpenSLR 83, http://www.openslr.org/83/) - CC BY-SA 4.0

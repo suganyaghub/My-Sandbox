@@ -13,7 +13,9 @@ No meeting text leaves the PC.
 Fallback source: switch to **Windows Live Captions** at the top left (start it with Win+Ctrl+L, set the language to German).
 It works for any audio, but without speaker names.
 
-**Read aloud:** click *Read aloud* to hear each English line with the offline Windows voices. Use headphones, otherwise the meeting hears it.
+**Read aloud:** click *Read aloud* to hear each English line. Use headphones, otherwise the meeting hears it.
+Voices: the Windows voices, or natural-sounding offline Piper voices (Settings → Voice → *Natural voices*; each is downloaded
+once from Hugging Face when you select it, about 63 MB, into `%LocalAppData%\CaptionTranslator\voices`).
 It is not available with the Windows Live Captions source (it would caption its own speech). If people talk faster than the voice, older lines are skipped to stay live.
 
 **Window:**
@@ -52,3 +54,7 @@ Share the `publish` folder (zip it). Colleagues start `CaptionTranslator.exe`; t
 
 - Teams UI updates may change the caption structure; use *Diagnose* and adjust the parser.
 - The offline model is weaker on technical terms (e.g. "Winkelgeber" → "angler").
+
+## License
+
+GPL-3.0 (the app includes espeak-ng, which is GPL-3.0). See `LICENSE` and `THIRD-PARTY-NOTICES.txt`.
